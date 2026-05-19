@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+models/model.pt
+models/model.pt.tmp
+*.egg-info/
+.DS_Store

@@ -51,17 +51,19 @@ def Train(model, train_loader, criterion, optimizer, num_epochs, model_path,task
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.8)
     for epoch in range(num_epochs):
         for i, (act, attr, label, lengths) in enumerate(train_loader):
-            #act, attr = act.to(device), attr.to(device)
             act, attr, label = act.to(device), attr.to(device), label[:,:lengths[0]].to(device)
-            outputs = model(act,attr, lengths)
+            outputs = model(act, attr, lengths)
+
+            # 패딩 위치를 제외한 마스크: (batch, seq_len)
+            seq_len = outputs.size(1)
+            mask = torch.arange(seq_len, device=device).unsqueeze(0) < lengths.to(device).unsqueeze(1)
+
             if task == TASK.NAP.value:
-                outputs = outputs.view(-1, outputs.size(-1))  # (batch_size * sequence_length, output_dim)
-                label = label.view(-1)  # (batch_size * sequence_length)
-                loss = criterion(outputs, label)
+                # (batch, seq_len, output_dim) → 실제 위치만
+                loss = criterion(outputs[mask], label[mask])
             else:
-                outputs = outputs.squeeze(-1)  # (batch_size, sequence_length)
-                label = label.float()  # (batch_size, sequence_length)
-                loss = criterion(outputs, label)
+                outputs = outputs.squeeze(-1)  # (batch, seq_len)
+                loss = criterion(outputs[mask], label[mask].float())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -75,7 +77,9 @@ def Train(model, train_loader, criterion, optimizer, num_epochs, model_path,task
                   
         if (loss.item() + 0.0001)< loss_:
             loss_ = loss.item()
-            torch.save(model.state_dict(), model_path)
+            tmp_path = model_path + '.tmp'
+            torch.save(model.state_dict(), tmp_path)
+            os.replace(tmp_path, model_path)
             early_count = 0
         else:
             if (early_count > 9) and (epoch > 100):
@@ -89,31 +93,38 @@ def Train(model, train_loader, criterion, optimizer, num_epochs, model_path,task
 
 
 def TestClassification(model, test_loader, output_dim, task, injection_type):
-    model.eval()  
-    true,pred = [], []
+    model.eval()
+    true, pred, conf_pred, conf_true = [], [], [], []
     length_bin, ratio_bin = [],[]
     if injection_type == INJM.CLN.value:
         with torch.no_grad():
             for act, attr, label, lengths in test_loader:
                 act, attr, label = act.to(device), attr.to(device), label.to(device)
                 outputs = model(act, attr, lengths)
-                
-                
+
                 indices = (lengths - 1).unsqueeze(1).unsqueeze(2).expand(-1, 1, outputs.size(2)).to(torch.int64).to(device)
                 outputs = outputs.gather(1, indices).squeeze(1)
                 indices = (lengths - 1).unsqueeze(1).to(torch.int64).to(device)  # (batch_size, 1)
                 label = label.gather(1, indices).squeeze(1)
-                #print(outputs.size(),label.size())
+
                 if task == TASK.NAP.value:
-                    _, predicted = torch.max(outputs.data, 1)
+                    probs = torch.softmax(outputs, dim=-1)           # (batch, num_class)
+                    cp, predicted = torch.max(probs, dim=1)          # 예측 클래스의 확률
+                    ct = probs.gather(1, label.unsqueeze(1).to(torch.int64)).squeeze(1)  # 정답 클래스의 확률
                     pred.extend(predicted.cpu().numpy())
+                    conf_pred.extend(cp.cpu().numpy())
+                    conf_true.extend(ct.cpu().numpy())
                 elif task == TASK.OP.value:
-                    predicted = torch.sigmoid(outputs).round().squeeze().tolist()
-                    pred.extend(predicted)
+                    probs = torch.sigmoid(outputs).squeeze()          # (batch,)  True일 확률
+                    predicted = probs.round()
+                    # outcome: label=1이면 probs, label=0이면 1-probs 가 정답 클래스 확률
+                    ct = torch.where(label == 1, probs, 1 - probs)
+                    pred.extend(predicted.cpu().numpy())
+                    conf_pred.extend(probs.cpu().numpy())
+                    conf_true.extend(ct.cpu().numpy())
                 true.extend(label.cpu().numpy())
                 length_bin.extend(lengths.cpu().numpy())
-                
-                
+
     else:
         with torch.no_grad():
             for act, attr, label, lengths, ratio in test_loader:
@@ -125,17 +136,24 @@ def TestClassification(model, test_loader, output_dim, task, injection_type):
                 indices = (lengths - 1).unsqueeze(1).to(torch.int64).to(device)  # (batch_size, 1)
                 label = label.gather(1, indices).squeeze(1)
 
-
                 if task == TASK.NAP.value:
-                    _, predicted = torch.max(outputs.data, 1)
+                    probs = torch.softmax(outputs, dim=-1)
+                    cp, predicted = torch.max(probs, dim=1)
+                    ct = probs.gather(1, label.unsqueeze(1).to(torch.int64)).squeeze(1)
                     pred.extend(predicted.cpu().numpy())
+                    conf_pred.extend(cp.cpu().numpy())
+                    conf_true.extend(ct.cpu().numpy())
                 elif task == TASK.OP.value:
-                    predicted = torch.sigmoid(outputs).round().squeeze().tolist()
-                    pred.extend(predicted)
+                    probs = torch.sigmoid(outputs).squeeze()
+                    predicted = probs.round()
+                    ct = torch.where(label == 1, probs, 1 - probs)
+                    pred.extend(predicted.cpu().numpy())
+                    conf_pred.extend(probs.cpu().numpy())
+                    conf_true.extend(ct.cpu().numpy())
                 true.extend(label.cpu().numpy())
                 length_bin.extend(lengths.cpu().numpy())
                 ratio_bin.extend(ratio.cpu().numpy())
-    return true,pred,length_bin,ratio_bin
+    return true, pred, conf_pred, conf_true, length_bin, ratio_bin
 
 
 def TestRegression(model, test_loader, scaler , injection_type):

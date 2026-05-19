@@ -75,26 +75,36 @@ args = parser.parse_args()
 def metrics_class(group):
     if len(group) == 0:
         return pd.Series({
-            'accuracy': 0,  
-            'fscore': 0     
+            'accuracy': None,
+            'fscore': None,
+            'mean_conf_true': None
         })
     accuracy = accuracy_score(group['true'], group['pred'])
     fscore = f1_score(group['true'], group['pred'], average='macro')
+    mean_conf_true = group['conf_true'].mean()
     return pd.Series({
         'accuracy': accuracy,
-        'fscore': fscore
+        'fscore': fscore,
+        'mean_conf_true': mean_conf_true
     })
 
-def interval_perf_class(true_bin, pred_bin, target_bin):
+def interval_perf_class(true_bin, pred_bin, conf_true_bin, target_bin):
     df = pd.DataFrame({
         'true': true_bin,
         'pred': pred_bin,
+        'conf_true': conf_true_bin,
         'target': target_bin,
     })
-    target_bins = pd.cut(df['target'], bins=[i/10 for i in range(11)], include_lowest=True)
-    df['target_bin'] = target_bins
+    all_bins = pd.CategoricalIndex(
+        pd.cut(df['target'], bins=[i/10 for i in range(11)], include_lowest=True).cat.categories
+    )
+    df['target_bin'] = pd.cut(df['target'], bins=[i/10 for i in range(11)], include_lowest=True)
 
-    each_metric = df.groupby('target_bin').apply(metrics_class).reset_index()
+    each_metric = (
+        df.groupby('target_bin', observed=False)
+        .apply(metrics_class)
+        .reset_index()
+    )
 
     return each_metric
 
@@ -156,7 +166,7 @@ if __name__ == "__main__":
                 combinations.append([f"-TRAIN-{p1}-{ratio1}",f"-TEST-{p1}-{ratio2}",p1,p1])
 
     for comb in combinations:
-        true_bin,pred_bin,length_bin,ratio_bin = [],[],[],[]
+        true_bin,pred_bin,conf_pred_bin,conf_true_bin,length_bin,ratio_bin = [],[],[],[],[],[]
         for rep in range(args.trials):
             if "CLEAN" in comb[0]:
                 train_csv = f"{args.dataset_path}{args.dataset_name}{comb[0]}.csv"
@@ -182,14 +192,38 @@ if __name__ == "__main__":
                 criterion = nn.BCEWithLogitsLoss()
             else: 
                 criterion = nn.SmoothL1Loss()
+            os.makedirs(os.path.dirname(args.modelpath), exist_ok=True)
             Train(model, train_loader, criterion, optimizer, args.epoch, args.modelpath, args.task)
             
             model.load_state_dict(torch.load(args.modelpath))
             if (args.task == TASK.NAP.value) or (args.task == TASK.OP.value):
-                true,pred,length,ratio = TestClassification(model, test_loader, output_dim, args.task, comb[3])
+                true,pred,conf_pred,conf_true,length,ratio = TestClassification(model, test_loader, output_dim, args.task, comb[3])
+                conf_pred_bin.extend(conf_pred)
+                conf_true_bin.extend(conf_true)
+
+                # replication별 저장
+                rep_acc  = accuracy_score(true, pred)
+                rep_f1   = f1_score(true, pred, average='macro')
+                rep_summary = {'rep': rep, 'accuracy': float(rep_acc), 'fscore': float(rep_f1), 'mean_conf_true': float(np.mean(conf_true))}
+                with open(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-rep{rep}-overall.json', 'w') as f:
+                    json.dump(rep_summary, f)
+
+                rep_length_metric = interval_perf_class(true, pred, conf_true, [x / max(length) for x in length])
+                rep_length_metric.to_csv(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-rep{rep}-length_perf.csv', index=False)
             else:
                 true,pred,length,ratio = TestRegression(model, test_loader, scaler, comb[3])
-                
+
+                # replication별 저장
+                rep_summary = {
+                    'rep': rep,
+                    'mse':  float(mean_squared_error(true, pred)),
+                    'mae':  float(mean_absolute_error(true, pred)),
+                    'r2':   float(r2_score(true, pred)),
+                    'rmse': float(np.sqrt(mean_squared_error(true, pred)))
+                }
+                with open(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-rep{rep}-overall.json', 'w') as f:
+                    json.dump(rep_summary, f)
+
             true_bin.extend(true),pred_bin.extend(pred),length_bin.extend(length),ratio_bin.extend(ratio)
 
 
@@ -205,15 +239,14 @@ if __name__ == "__main__":
             }
 
             with open(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-overall.json', 'w') as f:
-                json.dump(results_summary, f)       
-            
-            
-            length_metric  = interval_perf_class(true_bin,pred_bin, [x / max(length_bin) for x in length_bin])
+                json.dump(results_summary, f)
+
+            length_metric  = interval_perf_class(true_bin, pred_bin, conf_true_bin, [x / max(length_bin) for x in length_bin])
             length_metric.to_csv(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-length_perf.csv', index=False)
 
             if comb[3] != 'CLEAN':
-                ratio_metric = interval_perf_class(true_bin,pred_bin, ratio_bin)
-                ratio_metric.to_csv(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-ratio_perf.csv', index=False)  
+                ratio_metric = interval_perf_class(true_bin, pred_bin, conf_true_bin, ratio_bin)
+                ratio_metric.to_csv(f'{args.result_path}{args.dataset_name}-{args.task}{comb[0]}-{comb[1]}-ratio_perf.csv', index=False)
         
         else:
             overall_mse = mean_squared_error(true_bin, pred_bin)
