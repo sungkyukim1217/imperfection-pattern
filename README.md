@@ -6,7 +6,7 @@
 
 You can have BPIC15_1, Credit, Pub at below link.
 Please locate them in data/dataset/ folder
-https://drive.google.com/file/d/1KQL7WCyH_oIDUkt8V4zDFEl_KXD-o27N/view?usp=sharing
+https://drive.google.com/file/d/12-4NgKXslumHgC7UPfZDa5Qt2eg07RMX/view?usp=sharing
 
 # Structure of the Repository
 ``` 
@@ -17,9 +17,9 @@ Imperfection_Pattern
  ┃ ┣ preprocess.py
  ┃ ┗ datasets
  ┃   ┣ BPIC11
- ┃   ┣ BPIC15_1 (will  be uploaded)
- ┃   ┣ pub-new (will  be uploaded)
- ┃   ┗ credit-card-new (will  be uploaded)
+ ┃   ┣ BPIC15_1 
+ ┃   ┣ pub-new 
+ ┃   ┗ credit-card-new 
  ┣ models
  ┃ ┗ model.py
  ┗ utils
